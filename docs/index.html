@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wineye — WinDbg-style memory inspector</title>
+<meta name="description" content="wineye: a native-Windows, WinDbg-style inspector for kernel dumps, raw memory images and live Hyper-V VMs, with MCP, gdbserver and DAP server modes. One Python file on MemProcFS.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230e7490'/%3E%3Cellipse cx='16' cy='16' rx='11' ry='7' fill='none' stroke='white' stroke-width='2.4'/%3E%3Ccircle cx='16' cy='16' r='3.6' fill='white'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f7f9fb; --surface: #ffffff; --text: #14202b; --muted: #55657a;
+  --border: #dde4ec; --accent: #0e7490; --accent-soft: #e0f2f7;
+  --code-bg: #0f1720; --code-text: #d7e3ee; --code-dim: #7d90a3; --code-hi: #5eead4;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b1117; --surface: #121b24; --text: #e4ecf3; --muted: #93a4b6;
+    --border: #233140; --accent: #38bdf8; --accent-soft: #10283a;
+    --code-bg: #070c11; --code-text: #d7e3ee; --code-dim: #6d8094; --code-hi: #5eead4;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0b1117; --surface: #121b24; --text: #e4ecf3; --muted: #93a4b6;
+  --border: #233140; --accent: #38bdf8; --accent-soft: #10283a;
+  --code-bg: #070c11; --code-text: #d7e3ee; --code-dim: #6d8094; --code-hi: #5eead4;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+a { color: var(--accent); }
+code, pre { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 0.9em; font-variant-ligatures: none; }
+:not(pre) > code { background: var(--accent-soft); padding: 0.1em 0.35em; border-radius: 4px; }
+.wrap { max-width: 980px; margin: 0 auto; padding: 0 16px; }
+header.top { border-bottom: 1px solid var(--border); background: var(--surface); }
+header.top .wrap { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 56px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--text); text-decoration: none; }
+nav { display: flex; gap: 18px; flex-wrap: wrap; }
+nav a { color: var(--muted); text-decoration: none; font-size: 0.95rem; }
+nav a:hover { color: var(--accent); }
+.hero { padding-top: 56px; padding-bottom: 32px; }
+.hero h1 { font-size: clamp(2rem, 5vw, 3rem); line-height: 1.15; margin: 0 0 14px; letter-spacing: -0.02em; }
+.hero p.lead { font-size: 1.15rem; color: var(--muted); max-width: 680px; margin: 0 0 24px; }
+.buttons { display: flex; gap: 12px; flex-wrap: wrap; }
+.btn { display: inline-block; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 600; border: 1px solid var(--border); color: var(--text); background: var(--surface); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+:root[data-theme="dark"] .btn.primary { color: #06121c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn.primary { color: #06121c; } }
+pre.term { background: var(--code-bg); color: var(--code-text); border-radius: 10px; padding: 18px 20px; overflow-x: auto; margin: 28px 0 0; line-height: 1.5; }
+.term .p { color: var(--code-hi); }
+.term .d { color: var(--code-dim); }
+section { padding: 36px 0; border-top: 1px solid var(--border); }
+section h2 { font-size: 1.5rem; margin: 0 0 8px; letter-spacing: -0.01em; }
+section > .wrap > p.sub { color: var(--muted); margin: 0 0 24px; max-width: 720px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
+.card h3 { margin: 0 0 6px; font-size: 1.05rem; }
+.card p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; }
+tr:last-child td { border-bottom: 0; }
+td code { white-space: nowrap; }
+pre.block { background: var(--code-bg); color: var(--code-text); border-radius: 10px; padding: 16px 18px; overflow-x: auto; margin: 0 0 16px; }
+.steps { counter-reset: s; list-style: none; padding: 0; margin: 0 0 20px; }
+.steps li { counter-increment: s; position: relative; padding-left: 40px; margin-bottom: 12px; }
+.steps li::before { content: counter(s); position: absolute; left: 0; top: 0; width: 28px; height: 28px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 700; display: grid; place-items: center; font-size: 0.9rem; }
+.note { border-left: 3px solid var(--accent); background: var(--surface); padding: 12px 16px; border-radius: 0 8px 8px 0; color: var(--muted); }
+footer { border-top: 1px solid var(--border); padding: 28px 0 40px; color: var(--muted); font-size: 0.9rem; }
+footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+@media (max-width: 640px) { nav { display: none; } .hero { padding-top: 36px; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#">
+      <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#0e7490"/><ellipse cx="16" cy="16" rx="11" ry="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="16" cy="16" r="3.6" fill="#fff"/></svg>
+      wineye
+    </a>
+    <nav>
+      <a href="#start">Quick start</a>
+      <a href="#commands">Commands</a>
+      <a href="#servers">Server modes</a>
+      <a href="https://github.com/EGKrb/wineye">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <h1>Look inside Windows memory,<br>WinDbg-style.</h1>
+    <p class="lead">wineye inspects kernel crash dumps, raw memory images and <strong>live Hyper-V VMs</strong> from their memory alone — no debug transport in the guest. One Python file on MemProcFS's <code>vmm.dll</code>: no WSL, no pip package.</p>
+    <div class="buttons">
+      <a class="btn primary" href="https://github.com/EGKrb/wineye/releases/latest">Download</a>
+      <a class="btn" href="https://github.com/EGKrb/wineye">View on GitHub</a>
+      <a class="btn" href="https://github.com/EGKrb/wineye/blob/main/README.fr.md">Français</a>
+    </div>
+<pre class="term"><span class="d">PS&gt;</span> python wineye.py --vmm C:\Tools\MemProcFS\vmm.dll --dump MEMORY.DMP
+<span class="p">wineye&gt;</span> ps
+   PID   PPID            EPROCESS                 PEB  Name
+<span class="d">----------------------------------------------------------------------</span>
+     4      0  0xffffb00012340004  0x0000000000000000  System
+  7480   6312  0xffffb00012347480  0x0000007ff0000000  notepad.exe
+<span class="p">wineye&gt;</span> x nt!PsInitialSystemProcess
+<span class="p">wineye&gt;</span> dq nt!PsInitialSystemProcess L4</pre>
+  </div>
+
+  <section>
+    <div class="wrap">
+      <h2>What it does</h2>
+      <p class="sub">Passive, read-only analysis: the target does not know it is being looked at.</p>
+      <div class="grid">
+        <div class="card"><h3>Any memory source</h3><p>Kernel <code>.dmp</code>, <code>.raw</code> / <code>.mem</code> / <code>.vmem</code> images, any LeechCore device, or a live Hyper-V VM.</p></div>
+        <div class="card"><h3>WinDbg commands</h3><p><code>ps</code>, <code>lm</code>, <code>x</code>, <code>dq</code>, <code>dt</code>, <code>!vad</code>, <code>!handle</code>, pattern search — with PDB symbols.</p></div>
+        <div class="card"><h3>Server modes</h3><p>Expose the target as an <strong>MCP</strong> server for AI agents, a <strong>gdbserver</strong>, or a <strong>DAP</strong> adapter for your IDE.</p></div>
+        <div class="card"><h3>Scriptable</h3><p><code>-c "ps;lm"</code>, <code>--batch</code>, <code>--json</code>, or <code>import wineye</code> and use the <code>Vmm</code> class.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="start">
+    <div class="wrap">
+      <h2>Quick start</h2>
+      <p class="sub">Windows x64, Python 3.10 or newer.</p>
+      <ol class="steps">
+        <li>Get <code>vmm.dll</code> and <code>leechcore.dll</code> from a <a href="https://github.com/ufrisk/MemProcFS/releases">MemProcFS release</a>.</li>
+        <li>Download <a href="https://github.com/EGKrb/wineye/releases/latest"><code>wineye.py</code></a>.</li>
+        <li>Open a dump:</li>
+      </ol>
+<pre class="block">python wineye.py --vmm C:\Tools\MemProcFS\vmm.dll --dump C:\dumps\MEMORY.DMP
+python wineye.py --vmm C:\Tools\MemProcFS\vmm.dll --dump vm0.raw -c "ps;lm 4" --batch --json</pre>
+      <p class="note">Live Hyper-V VMs (<code>--live</code>, <code>--vm N</code>, <code>--from-vm N</code>) need administrator rights and the components set up by <a href="https://github.com/EGKrb/HvKdFusion">HvKdFusion</a>.</p>
+    </div>
+  </section>
+
+  <section id="commands">
+    <div class="wrap">
+      <h2>Commands</h2>
+      <p class="sub">Addresses accept <code>0x..</code>, decimal and <code>module!symbol</code>.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Command</th><th>Effect</th></tr></thead>
+          <tbody>
+            <tr><td><code>ps</code></td><td>processes</td></tr>
+            <tr><td><code>!process [pid]</code></td><td>process details</td></tr>
+            <tr><td><code>.pid &lt;n|-1&gt;</code></td><td>process context (<code>-1</code> = physical memory)</td></tr>
+            <tr><td><code>lm [pid]</code></td><td>modules</td></tr>
+            <tr><td><code>x &lt;mod&gt;!&lt;sym&gt;</code></td><td>resolve a symbol through the PDB</td></tr>
+            <tr><td><code>db | dw | dd | dq &lt;addr&gt; [L&lt;n&gt;]</code></td><td>hex dump</td></tr>
+            <tr><td><code>dt &lt;mod&gt;!&lt;type&gt; [field] [addr]</code></td><td>type size, field offset and value</td></tr>
+            <tr><td><code>!vad [pid]</code>, <code>!handle [pid]</code></td><td>VADs, handles</td></tr>
+            <tr><td><code>s &lt;addr&gt; &lt;len&gt; &lt;hex&gt;</code></td><td>byte pattern search</td></tr>
+            <tr><td><code>freeze</code>, <code>resume</code>, <code>r [reg...]</code></td><td>control channel on a live VM (<code>--vm N</code> or <code>.ctl N</code>)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="servers">
+    <div class="wrap">
+      <h2>Server modes</h2>
+      <p class="sub">Run <code>--serve</code> instead of the REPL. Read-only passive memory; the banner goes to stderr so stdout carries only the protocol.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Mode</th><th>Command</th><th>Use</th></tr></thead>
+          <tbody>
+            <tr><td><strong>MCP</strong></td><td><code>--serve mcp</code></td><td>JSON-RPC 2.0 over stdio for AI / agent clients: <code>list_processes</code>, <code>list_modules</code>, <code>read_memory</code>, <code>resolve_symbol</code>, ...</td></tr>
+            <tr><td><strong>gdbserver</strong></td><td><code>--serve gdb [--listen 127.0.0.1:2159]</code></td><td>GDB Remote Serial Protocol: <code>target remote</code>, then <code>x/16xg</code>, <code>info registers</code></td></tr>
+            <tr><td><strong>DAP</strong></td><td><code>--serve dap [--listen 127.0.0.1:4711]</code></td><td>Debug Adapter Protocol for an IDE: modules, readMemory, evaluate</td></tr>
+          </tbody>
+        </table>
+      </div>
+<pre class="block" style="margin-top:16px">{ "command": "python",
+  "args": ["C:\\Tools\\wineye\\wineye.py", "--vmm", "C:\\Tools\\MemProcFS\\vmm.dll",
+           "--dump", "C:\\dumps\\vm0.raw", "--serve", "mcp"] }</pre>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Limits</h2>
+      <p class="sub">Passive memory gives no run control: no breakpoints, no single-stepping, no register writes. For that, use WinDbg/kd through <a href="https://github.com/EGKrb/HvKdFusion">HvKdFusion</a> (<code>hvkdfusion.py debug</code>).</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>wineye · GPL-3.0-or-later · part of <a href="https://github.com/EGKrb/HvKdFusion">HvKdFusion</a> and <a href="https://github.com/EGKrb/Fathom">Fathom</a></span>
+    <span>Uses <a href="https://github.com/ufrisk/MemProcFS">MemProcFS</a> (AGPL-3.0, not included)</span>
+  </div>
+</footer>
+</body>
+</html>
