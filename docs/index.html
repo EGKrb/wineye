@@ -117,7 +117,7 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
         <div class="card"><h3>Any memory source</h3><p>Kernel <code>.dmp</code>, <code>.raw</code> / <code>.mem</code> / <code>.vmem</code> images, any LeechCore device, or a live Hyper-V VM.</p></div>
         <div class="card"><h3>WinDbg commands</h3><p><code>ps</code>, <code>lm</code>, <code>x</code>, <code>dq</code>, <code>dt</code>, <code>!vad</code>, <code>!handle</code>, pattern search — with PDB symbols.</p></div>
         <div class="card"><h3>Crash-dump debugger</h3><p><code>!analyze -v</code>, stacks from kernel into user mode, <code>.cxr</code> / <code>.trap</code>, <code>~</code>, <code>u</code> / <code>uf</code>, source lines and locals, <code>.dump /u</code> minidumps.</p></div>
-        <div class="card"><h3>No MemProcFS for .dmp</h3><p>A native engine reads every Windows x64 kernel dump format; own PDB reader, x64 unwinder and disassembler.</p></div>
+        <div class="card"><h3>No MemProcFS for .dmp</h3><p>A native engine reads every Windows x64 kernel dump format; own PDB reader, x64 and x86 (WoW64) unwinders and disassembler.</p></div>
         <div class="card"><h3>Server modes</h3><p>Expose the target as an <strong>MCP</strong> server for AI agents, a <strong>gdbserver</strong>, or a <strong>DAP</strong> adapter for your IDE.</p></div>
         <div class="card"><h3>Scriptable</h3><p><code>-c "ps;lm"</code>, <code>--batch</code>, <code>--json</code>, or <code>import wineye</code> and use the <code>Vmm</code> class.</p></div>
       </div>

@@ -4,7 +4,7 @@
 
 **wineye** is a native-Windows, **WinDbg-style memory inspector**: it looks at a Windows target from its memory alone — a kernel crash dump, a raw memory image, or a **live Hyper-V VM** — with no debug transport in the guest and the target unaware it is being inspected. It drives [MemProcFS](https://github.com/ufrisk/MemProcFS)'s `vmm.dll` directly through `ctypes`, or reads Windows kernel crash dumps itself: **one Python file, no WSL, no pip package, no Python extension**.
 
-It is also a **crash-dump debugger**: `!analyze -v`, call stacks from kernel mode down into user mode, trap frames and context records, processors, disassembly, source lines and local variables with private PDBs, and user-mode minidump extraction (`.dump /u`) — with its own PDB reader, x64 stack unwinder and x86-64 disassembler.
+It is also a **crash-dump debugger**: `!analyze -v`, call stacks from kernel mode down into user mode, trap frames and context records, processors, disassembly, source lines and local variables with private PDBs, and user-mode minidump extraction (`.dump /u`) — with its own PDB reader, x64 and x86 (WoW64) stack unwinders and x86-64 / x86 disassembler.
 
 It can also run as an **MCP server** (for AI/agent clients), a **gdbserver** or a **Debug Adapter Protocol** server.
 
@@ -94,7 +94,7 @@ On crash dumps, images and live VMs — with Microsoft's symbols (downloaded) or
 | Command | Effect |
 |---|---|
 | `!analyze [-v]` | bugcheck analysis: stop code, name and arguments, faulting context (trap frame / context record taken from the arguments), faulting instruction, **module / driver**, symbol, stack. On a dump that is not a crash: the current processor's context |
-| `k [n]`, `kb [n]` | call stack of the current context, **kernel then user mode across the system call** (and interrupts / machine frames); source lines with a private PDB; `kb` adds the 4 parameter home slots ("Args to Child") |
+| `k [n]`, `kb [n]` | call stack of the current context, **kernel then user mode across the system call** (and interrupts / machine frames), **32-bit code of WoW64 processes included, with or without PDBs**; source lines with a private PDB; `kb` adds the 4 parameter home slots ("Args to Child"; x86: the first 3 stack parameters) |
 | `~`, `~<n>` | processors (current thread, process, rip); switch to processor *n*. On a user-mode minidump: its threads |
 | `!thread [ethread]` | thread details and stack (waiting threads are unwound from their switch frame) |
 | `.thread <ethread>` | switch the context to a thread |
@@ -154,7 +154,33 @@ outer  (frame 01)
   local  _POINT3                p                    = {x=7 y=8 z=0x1122334455667788}
 ```
 
-Known limit: 32-bit code of WoW64 processes is not unwound (x64 only).
+### WoW64 and 32-bit code
+
+The 32-bit code of WoW64 processes is unwound too. A WoW64 thread stopped in its 64-bit layer (system call, wait...) gets its x86 frames where they belong, between the wow64cpu entry and the CPU simulation loop, from the 32-bit context wow64cpu saved in the thread's TEB; a thread running 32-bit code is unwound from its own registers. As WinDbg does, x86 frames come from the FPO / FrameData records of the module's PDB (program strings). **Without a PDB**, wineye reads the code: it follows the pushes, pops, `sub esp`, ebp frame and calls (with their `ret N`) of the function from its start to the current instruction, so it knows where its return address is even in code compiled without frame pointers (`/Oy`). The function start comes from the symbols, from a return address on the stack whose `call` targets it — accepted only if the layout lands exactly on that slot — or from the `int 3` padding before it; the ebp chain bounds the result and is the fallback. On real dumps, stacks without any PDB are identical to those with PDBs:
+
+```
+wineye> k                       (64-bit minidump of a 32-bit program, thread in Sleep)
+ #  Child-SP          RetAddr           Site d'appel
+00  000000000102ee78  0000000077221e60  wow64cpu!CpupSyscallStub+0x13
+01  000000000102ee80  00000000772a869c  wow64cpu!Thunk2ArgNSpNSpReloadState+0xc
+    --- code 32 bits (WoW64) ---
+02  000000000112fbd4  00000000772c3a89  ntdll!ZwDelayExecution+0xc
+03  000000000112fbd8  00000000759dbb50  ntdll!RtlDelayExecution+0xe9
+04  000000000112fbf8  00000000759dbaef  KERNELBASE!SleepEx+0x50
+05  000000000112fc60  0000000000a773e8  KERNELBASE!Sleep+0xf
+06  000000000112fc70  0000000000a7740b  app!sleeper_inner+0x8  [app.c @ 24]
+07  000000000112fc78  0000000000a773cc  app!sleeper_mid+0xb  [app.c @ 30]
+08  000000000112fc80  0000000076325d49  app!sleeper+0xc  [app.c @ 34]
+09  000000000112fc8c  000000007729c88b  kernel32!BaseThreadInitThunk+0x19
+0a  000000000112fc9c  000000007729c811  ntdll!__RtlUserThreadStart+0x2b
+0b  000000000112fcf4  0000000077221789  ntdll!_RtlUserThreadStart+0x1b
+    --- couche WoW64 (code 64 bits) ---
+0c  000000000102ef30  00007fff0a34282d  wow64cpu!BTCpuSimulate+0x9
+0d  000000000102ef70  00007fff0a341ff2  wow64!RunCpuSimulation+0xd
+...
+```
+
+On x86 frames, `kb` shows the stack parameters, `dv` the variables (ebp-relative in `/Od` code, relative to the function entry in FPO code), `r` the 32-bit registers, and `u` / `uf` disassemble 32-bit code. x86 minidumps (written by a 32-bit tool) open too, and the native engine lists the 32-bit modules of WoW64 processes (PEB32). Modules whose loader strings or header are paged out are completed from the VADs (name, TimeDateStamp, CheckSum), with the native engine and with MemProcFS. The 32-bit stack has to be in the source: a small 64-bit minidump of a WoW64 process only holds the 64-bit stacks, which `k` says where the 32-bit frames would be; take a full minidump (or `.dump /u` from a kernel dump, which keeps the TEBs and 32-bit stacks). A frame found only by scanning the stack is marked as uncertain.
 
 **Scripting:** `-c "ps;lm"` runs commands (repeatable), `--batch` quits afterwards, `--json` prints structured output:
 
@@ -204,7 +230,7 @@ python tests\test_debugger.py
 ```
 
 - `test_servers.py`: protocol-level tests of the MCP, DAP and gdbserver modes against a fake `Vmm`.
-- `test_debugger.py`: disassembler vectors, `CONTEXT` records, the PDB reader on a small private PDB (`tests/data/fixture.pdb`, built from `fixture.c`: lines, parameters, locals, types), x64 unwinding and `k` / `dv` / `.frame` / `u` / `uf` on a synthetic process, the crash-dump reader on a synthetic `PAGEDU64` dump, modules rebuilt from the VADs of a kernel dump, local image identification, `kb` / `dv` without a PDB, and the user-mode minidump engine on a synthetic `MDMP` (`~`, `!analyze -v`, `k`, `dv`).
+- `test_debugger.py`: disassembler vectors, `CONTEXT` records, the PDB reader on a small private PDB (`tests/data/fixture.pdb`, built from `fixture.c`: lines, parameters, locals, types), x64 unwinding and `k` / `dv` / `.frame` / `u` / `uf` on a synthetic process, the crash-dump reader on a synthetic `PAGEDU64` dump, modules rebuilt from the VADs of a kernel dump, local image identification, `kb` / `dv` without a PDB, the user-mode minidump engine on a synthetic `MDMP` (`~`, `!analyze -v`, `k`, `dv`), and x86 / WoW64: FPO program strings, `tests/data/fixture32.pdb` (FrameData, built from `fixture32.c`), x86 unwinding through FPO and ebp frames, with and without PDB (stack layout from the code), a WoW64 thread (32-bit context in its TEB), `kb` / `dv` / `r` / `u` / `uf` on x86 frames, an x86 minidump, the PEB32 module list, modules completed from the VADs, `vmm.dll`'s zero-filled pages.
 
 No `vmm.dll` and no target needed, so they run anywhere (on every push in GitHub Actions, on Windows and Linux).
 

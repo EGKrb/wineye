@@ -4,7 +4,7 @@
 
 **wineye** est un **inspecteur mémoire façon WinDbg**, natif Windows : il analyse une cible Windows à partir de sa seule mémoire — dump noyau, image mémoire brute ou **VM Hyper-V en direct** — sans transport de débogage dans l'invité, et sans que la cible le sache. Il pilote directement `vmm.dll` de [MemProcFS](https://github.com/ufrisk/MemProcFS) via `ctypes`, ou lit lui-même les dumps noyau Windows : **un seul fichier Python, ni WSL, ni paquet pip, ni extension Python**.
 
-C'est aussi un **débogueur de dumps** : `!analyze -v`, piles d'appels du noyau jusqu'en mode utilisateur, trap frames et enregistrements de contexte, processeurs, désassemblage, lignes source et variables locales avec des PDB privés, et extraction de minidumps user-mode (`.dump /u`) — avec son propre lecteur de PDB, son dérouleur de pile x64 et son désassembleur x86-64.
+C'est aussi un **débogueur de dumps** : `!analyze -v`, piles d'appels du noyau jusqu'en mode utilisateur, trap frames et enregistrements de contexte, processeurs, désassemblage, lignes source et variables locales avec des PDB privés, et extraction de minidumps user-mode (`.dump /u`) — avec son propre lecteur de PDB, ses dérouleurs de pile x64 et x86 (WoW64) et son désassembleur x86-64 / x86.
 
 Il peut aussi tourner en **serveur MCP** (pour un client IA / agent), en **gdbserver** ou en serveur **Debug Adapter Protocol**.
 
@@ -92,7 +92,7 @@ Sur les dumps, les images et les VM en direct — avec les symboles Microsoft (t
 | Commande | Effet |
 |---|---|
 | `!analyze [-v]` | analyse du bugcheck : code d'arrêt, nom et arguments, contexte fautif (trap frame / enregistrement de contexte tirés des arguments), instruction fautive, **module / driver**, symbole, pile. Sur un dump qui n'est pas un plantage : le contexte du processeur courant |
-| `k [n]`, `kb [n]` | pile d'appels du contexte courant, **noyau puis mode utilisateur à travers l'appel système** (et les interruptions / machine frames) ; lignes source avec un PDB privé ; `kb` ajoute les 4 slots de paramètres (« Args to Child ») |
+| `k [n]`, `kb [n]` | pile d'appels du contexte courant, **noyau puis mode utilisateur à travers l'appel système** (et les interruptions / machine frames), **code 32 bits des processus WoW64 compris, avec ou sans PDB** ; lignes source avec un PDB privé ; `kb` ajoute les 4 slots de paramètres (« Args to Child » ; x86 : les 3 premiers paramètres sur la pile) |
 | `~`, `~<n>` | processeurs (thread courant, processus, rip) ; bascule sur le processeur *n*. Sur un minidump user-mode : ses threads |
 | `!thread [ethread]` | détails et pile d'un thread (les threads en attente sont déroulés depuis leur switch frame) |
 | `.thread <ethread>` | bascule le contexte sur un thread |
@@ -152,7 +152,33 @@ outer  (frame 01)
   local  _POINT3                p                    = {x=7 y=8 z=0x1122334455667788}
 ```
 
-Limite connue : le code 32 bits des processus WoW64 n'est pas déroulé (x64 uniquement).
+### WoW64 et code 32 bits
+
+Le code 32 bits des processus WoW64 est déroulé lui aussi. Un thread WoW64 arrêté dans sa couche 64 bits (appel système, attente...) reçoit ses frames x86 à leur vraie place, entre l'entrée dans wow64cpu et la boucle de simulation du CPU, à partir du contexte 32 bits que wow64cpu a sauvegardé dans le TEB du thread ; un thread qui exécute du code 32 bits est déroulé depuis ses propres registres. Comme WinDbg, les frames x86 viennent des enregistrements FPO / FrameData du PDB du module (programmes postfixés). **Sans PDB**, wineye lit le code : il suit les push, pop, `sub esp`, frame ebp et appels (avec leur `ret N`) de la fonction depuis son début jusqu'à l'instruction courante, et sait donc où est son adresse de retour même dans du code compilé sans pointeur de frame (`/Oy`). Le début de la fonction vient des symboles, d'une adresse de retour de la pile dont le `call` la vise — retenue seulement si l'analyse tombe exactement sur ce slot — ou du bourrage `int 3` qui la précède ; le chaînage ebp borne le résultat et sert de repli. Sur de vrais dumps, les piles sans aucun PDB sont identiques à celles obtenues avec les PDB :
+
+```
+wineye> k                       (minidump 64 bits d'un programme 32 bits, thread dans Sleep)
+ #  Child-SP          RetAddr           Site d'appel
+00  000000000102ee78  0000000077221e60  wow64cpu!CpupSyscallStub+0x13
+01  000000000102ee80  00000000772a869c  wow64cpu!Thunk2ArgNSpNSpReloadState+0xc
+    --- code 32 bits (WoW64) ---
+02  000000000112fbd4  00000000772c3a89  ntdll!ZwDelayExecution+0xc
+03  000000000112fbd8  00000000759dbb50  ntdll!RtlDelayExecution+0xe9
+04  000000000112fbf8  00000000759dbaef  KERNELBASE!SleepEx+0x50
+05  000000000112fc60  0000000000a773e8  KERNELBASE!Sleep+0xf
+06  000000000112fc70  0000000000a7740b  app!sleeper_inner+0x8  [app.c @ 24]
+07  000000000112fc78  0000000000a773cc  app!sleeper_mid+0xb  [app.c @ 30]
+08  000000000112fc80  0000000076325d49  app!sleeper+0xc  [app.c @ 34]
+09  000000000112fc8c  000000007729c88b  kernel32!BaseThreadInitThunk+0x19
+0a  000000000112fc9c  000000007729c811  ntdll!__RtlUserThreadStart+0x2b
+0b  000000000112fcf4  0000000077221789  ntdll!_RtlUserThreadStart+0x1b
+    --- couche WoW64 (code 64 bits) ---
+0c  000000000102ef30  00007fff0a34282d  wow64cpu!BTCpuSimulate+0x9
+0d  000000000102ef70  00007fff0a341ff2  wow64!RunCpuSimulation+0xd
+...
+```
+
+Sur les frames x86, `kb` affiche les paramètres sur la pile, `dv` les variables (relatives à ebp en code `/Od`, à l'entrée de la fonction en code FPO), `r` les registres 32 bits, et `u` / `uf` désassemblent du code 32 bits. Les minidumps x86 (écrits par un outil 32 bits) s'ouvrent aussi, et le moteur natif liste les modules 32 bits des processus WoW64 (PEB32). Les modules dont les chaînes du loader ou l'en-tête sont paginés sont complétés depuis les VAD (nom, TimeDateStamp, CheckSum), avec le moteur natif comme avec MemProcFS. La pile 32 bits doit être dans la source : un petit minidump 64 bits d'un processus WoW64 ne contient que les piles 64 bits, ce que `k` signale là où seraient les frames 32 bits ; prendre un minidump complet (ou `.dump /u` depuis un dump noyau, qui garde les TEB et les piles 32 bits). Une frame trouvée seulement en balayant la pile est marquée incertaine.
 
 **Scripts :** `-c "ps;lm"` exécute des commandes (répétable), `--batch` quitte ensuite, `--json` produit une sortie structurée :
 
@@ -202,7 +228,7 @@ python tests\test_debugger.py
 ```
 
 - `test_servers.py` : tests au niveau protocole des modes MCP, DAP et gdbserver, avec un `Vmm` factice.
-- `test_debugger.py` : vecteurs du désassembleur, enregistrements `CONTEXT`, lecteur de PDB sur un petit PDB privé (`tests/data/fixture.pdb`, compilé depuis `fixture.c` : lignes, paramètres, variables locales, types), déroulage x64 et `k` / `dv` / `.frame` / `u` / `uf` sur un processus synthétique, lecteur de dumps sur un dump `PAGEDU64` synthétique, modules reconstruits depuis les VAD d'un dump noyau, identification locale d'une image, `kb` / `dv` sans PDB, et moteur de minidumps user-mode sur un `MDMP` synthétique (`~`, `!analyze -v`, `k`, `dv`).
+- `test_debugger.py` : vecteurs du désassembleur, enregistrements `CONTEXT`, lecteur de PDB sur un petit PDB privé (`tests/data/fixture.pdb`, compilé depuis `fixture.c` : lignes, paramètres, variables locales, types), déroulage x64 et `k` / `dv` / `.frame` / `u` / `uf` sur un processus synthétique, lecteur de dumps sur un dump `PAGEDU64` synthétique, modules reconstruits depuis les VAD d'un dump noyau, identification locale d'une image, `kb` / `dv` sans PDB, moteur de minidumps user-mode sur un `MDMP` synthétique (`~`, `!analyze -v`, `k`, `dv`), et x86 / WoW64 : programmes FPO, `tests/data/fixture32.pdb` (FrameData, compilé depuis `fixture32.c`), déroulage x86 à travers des frames FPO et ebp, avec et sans PDB (disposition de la pile lue dans le code), un thread WoW64 (contexte 32 bits dans son TEB), `kb` / `dv` / `r` / `u` / `uf` sur des frames x86, un minidump x86, la liste des modules PEB32, les modules complétés depuis les VAD, les pages remplies de zéros par `vmm.dll`.
 
 Ni `vmm.dll` ni cible nécessaires : ils tournent partout (à chaque push dans GitHub Actions, sous Windows et Linux).
 
