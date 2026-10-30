@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.1.0] - 2026-10-30
+
+Crash-dump debugger: wineye now reads PDBs, unwinds x64 stacks and disassembles
+by itself (still one Python file, standard library only).
+
+- `!analyze [-v]`: bugcheck name and arguments, faulting context (trap frame /
+  context record from the arguments), faulting instruction, module / driver,
+  symbol, stack, failure bucket.
+- Call stacks `k`, `!thread`, `!process <pid> 7`: x64 unwinding from `.pdata`,
+  kernel to user mode across the system call (and interrupts), waiting threads
+  from their switch frame, session space (win32k).
+- Contexts: `~` / `~<n>` processors, `.thread`, `.cxr`, `.trap`, `r`, `.frame`.
+- Disassembly: `u`, `uf` (whole function, split chunks) in WinDbg syntax, `ln`.
+- Private PDBs (`--sympath`, `.sympath`, `WINEYE_SYMPATH`): source lines in stacks,
+  `dv` (parameters and locals with their values); Microsoft symbols and missing
+  module images downloaded into `~/.wineye/symbols` (`--no-symbol-download`).
+- `.dump /u [pid] <file>`: user-mode minidump of a process (threads, modules,
+  resident memory) for WinDbg / Visual Studio.
+- Native engine (`--engine native`, automatic fallback for `.dmp`): every Windows
+  x64 kernel dump format without MemProcFS.
+- Addresses are expressions, hexadecimal by default as in WinDbg.
+- MCP tools `stack`, `analyze`, `disassemble`; DAP `stackTrace` returns real frames.
+- Fixed: `vmm.dll` never initialized (its argument parsing starts at index 0);
+  kernel reads in a KVA-shadowed process context now fall back to System.
+- Tests: `tests/test_debugger.py` (disassembler, PDB fixture, unwinder, synthetic
+  crash dump), run on Windows and Linux.
+
 ## [1.0.0] - 2026-10-29
 
 First standalone release of wineye (previously shipped only inside
@@ -13,3 +40,4 @@ First standalone release of wineye (previously shipped only inside
 - Server modes `--serve mcp | gdb | dap`.
 
 [1.0.0]: https://github.com/EGKrb/wineye/releases/tag/v1.0.0
+[1.1.0]: https://github.com/EGKrb/wineye/releases/tag/v1.1.0

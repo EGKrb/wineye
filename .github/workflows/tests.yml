@@ -18,5 +18,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Protocol tests (MCP / DAP / gdbserver)
         run: python tests/test_servers.py
+      - name: Debugger tests (disassembler / PDB / unwinder / crash dump)
+        run: python tests/test_debugger.py
       - name: CLI help
         run: python wineye.py --help

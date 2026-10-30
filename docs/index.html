@@ -116,6 +116,8 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
       <div class="grid">
         <div class="card"><h3>Any memory source</h3><p>Kernel <code>.dmp</code>, <code>.raw</code> / <code>.mem</code> / <code>.vmem</code> images, any LeechCore device, or a live Hyper-V VM.</p></div>
         <div class="card"><h3>WinDbg commands</h3><p><code>ps</code>, <code>lm</code>, <code>x</code>, <code>dq</code>, <code>dt</code>, <code>!vad</code>, <code>!handle</code>, pattern search — with PDB symbols.</p></div>
+        <div class="card"><h3>Crash-dump debugger</h3><p><code>!analyze -v</code>, stacks from kernel into user mode, <code>.cxr</code> / <code>.trap</code>, <code>~</code>, <code>u</code> / <code>uf</code>, source lines and locals, <code>.dump /u</code> minidumps.</p></div>
+        <div class="card"><h3>No MemProcFS for .dmp</h3><p>A native engine reads every Windows x64 kernel dump format; own PDB reader, x64 unwinder and disassembler.</p></div>
         <div class="card"><h3>Server modes</h3><p>Expose the target as an <strong>MCP</strong> server for AI agents, a <strong>gdbserver</strong>, or a <strong>DAP</strong> adapter for your IDE.</p></div>
         <div class="card"><h3>Scriptable</h3><p><code>-c "ps;lm"</code>, <code>--batch</code>, <code>--json</code>, or <code>import wineye</code> and use the <code>Vmm</code> class.</p></div>
       </div>
@@ -127,11 +129,13 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
       <h2>Quick start</h2>
       <p class="sub">Windows x64, Python 3.10 or newer.</p>
       <ol class="steps">
-        <li>Get <code>vmm.dll</code> and <code>leechcore.dll</code> from a <a href="https://github.com/ufrisk/MemProcFS/releases">MemProcFS release</a>.</li>
         <li>Download <a href="https://github.com/EGKrb/wineye/releases/latest"><code>wineye.py</code></a>.</li>
+        <li>For raw images, LeechCore devices and live VMs: get <code>vmm.dll</code> and <code>leechcore.dll</code> from a <a href="https://github.com/ufrisk/MemProcFS/releases">MemProcFS release</a> (kernel <code>.dmp</code> files open without it).</li>
         <li>Open a dump:</li>
       </ol>
-<pre class="block">python wineye.py --vmm C:\Tools\MemProcFS\vmm.dll --dump C:\dumps\MEMORY.DMP
+<pre class="block">python wineye.py --dump C:\dumps\MEMORY.DMP -c "!analyze -v"
+python wineye.py --dump MEMORY.DMP --sympath C:\build\pdb -c "k;dv" --batch
+python wineye.py --vmm C:\Tools\MemProcFS\vmm.dll --dump C:\dumps\MEMORY.DMP
 python wineye.py --vmm C:\Tools\MemProcFS\vmm.dll --dump vm0.raw -c "ps;lm 4" --batch --json</pre>
       <p class="note">Live Hyper-V VMs (<code>--live</code>, <code>--vm N</code>, <code>--from-vm N</code>) need administrator rights and the components set up by <a href="https://github.com/EGKrb/HvKdFusion">HvKdFusion</a>.</p>
     </div>
@@ -140,7 +144,7 @@ python wineye.py --vmm C:\Tools\MemProcFS\vmm.dll --dump vm0.raw -c "ps;lm 4" --
   <section id="commands">
     <div class="wrap">
       <h2>Commands</h2>
-      <p class="sub">Addresses accept <code>0x..</code>, decimal and <code>module!symbol</code>.</p>
+      <p class="sub">Addresses are hexadecimal by default as in WinDbg (<code>0x..</code> too, <code>0n</code> for decimal), with registers, <code>module!symbol</code>, <code>+</code> and <code>-</code>.</p>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Command</th><th>Effect</th></tr></thead>
@@ -161,6 +165,36 @@ python wineye.py --vmm C:\Tools\MemProcFS\vmm.dll --dump vm0.raw -c "ps;lm 4" --
     </div>
   </section>
 
+  <section id="debugger">
+    <div class="wrap">
+      <h2>Debugger</h2>
+      <p class="sub">On crash dumps, images and live VMs, with Microsoft's symbols (downloaded) or your private PDBs (<code>--sympath</code>).</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Command</th><th>Effect</th></tr></thead>
+          <tbody>
+            <tr><td><code>!analyze [-v]</code></td><td>bugcheck, arguments, faulting context, instruction, module / driver, stack</td></tr>
+            <tr><td><code>k [n]</code></td><td>call stack, kernel then user mode across the system call; source lines</td></tr>
+            <tr><td><code>~</code>, <code>~&lt;n&gt;</code></td><td>processors; switch to a processor</td></tr>
+            <tr><td><code>!thread</code>, <code>.thread &lt;ethread&gt;</code></td><td>thread details and stack; switch to a thread</td></tr>
+            <tr><td><code>.cxr [addr]</code>, <code>.trap &lt;addr&gt;</code>, <code>r</code></td><td>context from a CONTEXT record / KTRAP_FRAME; registers</td></tr>
+            <tr><td><code>u [addr] [L&lt;n&gt;]</code>, <code>uf &lt;func&gt;</code>, <code>ln</code></td><td>disassembly (WinDbg syntax), whole function, nearest symbol</td></tr>
+            <tr><td><code>.frame [n]</code>, <code>dv</code></td><td>select a frame; its parameters and locals (private PDB)</td></tr>
+            <tr><td><code>!process &lt;pid&gt; 7</code></td><td>threads of a process with their stacks</td></tr>
+            <tr><td><code>.dump /u [pid] &lt;file&gt;</code></td><td>user-mode minidump of a process, for WinDbg / Visual Studio</td></tr>
+          </tbody>
+        </table>
+      </div>
+<pre class="term"><span class="p">wineye&gt;</span> !thread ffffc00c518a4080
+  fffff40c99aef480  fffff803f2c3ef13  win32kfull!NtUserWaitMessage+0x42
+  fffff40c99aef4c0  00007ffab2a71204  nt!KiSystemServiceCopyEnd+0x13
+<span class="d">      --- passage en mode utilisateur ---</span>
+  00000000006ef6c8  00007ffab4478b8d  win32u!ZwUserWaitMessage+0x14
+  00000000006ef6d0  00007ffab4743356  SHELL32!CDesktopBrowser::_MessageLoop+0x311
+  00000000006efc90  0000000000000000  ntdll!RtlUserThreadStart+0x21</pre>
+    </div>
+  </section>
+
   <section id="servers">
     <div class="wrap">
       <h2>Server modes</h2>
@@ -169,9 +203,9 @@ python wineye.py --vmm C:\Tools\MemProcFS\vmm.dll --dump vm0.raw -c "ps;lm 4" --
         <table>
           <thead><tr><th>Mode</th><th>Command</th><th>Use</th></tr></thead>
           <tbody>
-            <tr><td><strong>MCP</strong></td><td><code>--serve mcp</code></td><td>JSON-RPC 2.0 over stdio for AI / agent clients: <code>list_processes</code>, <code>list_modules</code>, <code>read_memory</code>, <code>resolve_symbol</code>, ...</td></tr>
+            <tr><td><strong>MCP</strong></td><td><code>--serve mcp</code></td><td>JSON-RPC 2.0 over stdio for AI / agent clients: <code>list_processes</code>, <code>list_modules</code>, <code>read_memory</code>, <code>resolve_symbol</code>, <code>stack</code>, <code>analyze</code>, <code>disassemble</code>, ...</td></tr>
             <tr><td><strong>gdbserver</strong></td><td><code>--serve gdb [--listen 127.0.0.1:2159]</code></td><td>GDB Remote Serial Protocol: <code>target remote</code>, then <code>x/16xg</code>, <code>info registers</code></td></tr>
-            <tr><td><strong>DAP</strong></td><td><code>--serve dap [--listen 127.0.0.1:4711]</code></td><td>Debug Adapter Protocol for an IDE: modules, readMemory, evaluate</td></tr>
+            <tr><td><strong>DAP</strong></td><td><code>--serve dap [--listen 127.0.0.1:4711]</code></td><td>Debug Adapter Protocol for an IDE: modules, stackTrace, readMemory, evaluate</td></tr>
           </tbody>
         </table>
       </div>

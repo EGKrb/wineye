@@ -2,7 +2,9 @@
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE) [![Platform: Windows](https://img.shields.io/badge/Platform-Windows%20x64-0078D6.svg)](#) [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](#) [![Tests](https://github.com/EGKrb/wineye/actions/workflows/tests.yml/badge.svg)](https://github.com/EGKrb/wineye/actions/workflows/tests.yml)
 
-**wineye** is a native-Windows, **WinDbg-style memory inspector**: it looks at a Windows target from its memory alone — a kernel crash dump, a raw memory image, or a **live Hyper-V VM** — with no debug transport in the guest and the target unaware it is being inspected. It drives [MemProcFS](https://github.com/ufrisk/MemProcFS)'s `vmm.dll` directly through `ctypes`: **one Python file, no WSL, no pip package, no Python extension**.
+**wineye** is a native-Windows, **WinDbg-style memory inspector**: it looks at a Windows target from its memory alone — a kernel crash dump, a raw memory image, or a **live Hyper-V VM** — with no debug transport in the guest and the target unaware it is being inspected. It drives [MemProcFS](https://github.com/ufrisk/MemProcFS)'s `vmm.dll` directly through `ctypes`, or reads Windows kernel crash dumps itself: **one Python file, no WSL, no pip package, no Python extension**.
+
+It is also a **crash-dump debugger**: `!analyze -v`, call stacks from kernel mode down into user mode, trap frames and context records, processors, disassembly, source lines and local variables with private PDBs, and user-mode minidump extraction (`.dump /u`) — with its own PDB reader, x64 stack unwinder and x86-64 disassembler.
 
 It can also run as an **MCP server** (for AI/agent clients), a **gdbserver** or a **Debug Adapter Protocol** server.
 
@@ -18,19 +20,40 @@ wineye> .pid 7480
 wineye> lm
 wineye> x nt!PsInitialSystemProcess
 wineye> dq nt!PsInitialSystemProcess L4
+wineye> !thread ffffc00c518a4080
+THREAD 0xffffc00c518a4080  Cid 0xb20.0xb24  Teb 0x942000  processus explorer.exe (pid 2848)
+  Child-SP          RetAddr           Site d'appel
+  fffff40c99aeeeb0  fffff803f2ae5d76  nt!KiSwapContext+0x76
+  ...
+  fffff40c99aef480  fffff803f2c3ef13  win32kfull!NtUserWaitMessage+0x42
+  fffff40c99aef4c0  00007ffab2a71204  nt!KiSystemServiceCopyEnd+0x13
+      --- passage en mode utilisateur ---
+  00000000006ef6c8  00007ffab4478b8d  win32u!ZwUserWaitMessage+0x14
+  00000000006ef6d0  00007ffab4743356  SHELL32!CDesktopBrowser::_MessageLoop+0x311
+  ...
+  00000000006efc90  0000000000000000  ntdll!RtlUserThreadStart+0x21
 ```
+
+(wineye's messages are in French.)
 
 ---
 
 ## Install
 
 1. **Python 3.10+** (standard library only).
-2. **`vmm.dll`** from a [MemProcFS release](https://github.com/ufrisk/MemProcFS/releases) (x64), with `leechcore.dll` next to it.
-3. Download [`wineye.py`](wineye.py) (or the [release zip](https://github.com/EGKrb/wineye/releases/latest)).
+2. Download [`wineye.py`](wineye.py) (or the [release zip](https://github.com/EGKrb/wineye/releases/latest)).
+3. For raw images, LeechCore devices and live VMs: **`vmm.dll`** from a [MemProcFS release](https://github.com/ufrisk/MemProcFS/releases) (x64), with `leechcore.dll` next to it. Kernel crash dumps (`.dmp`) also open **without MemProcFS**, with the native engine.
 
 ```powershell
-python wineye.py --vmm C:\Tools\MemProcFS\vmm.dll --dump C:\dumps\MEMORY.DMP
+python wineye.py --dump C:\dumps\MEMORY.DMP                                   # native engine
+python wineye.py --vmm C:\Tools\MemProcFS\vmm.dll --dump C:\dumps\MEMORY.DMP   # MemProcFS
 ```
+
+| Option | Effect |
+|---|---|
+| `--engine auto\|vmm\|native` | `vmm` = MemProcFS; `native` = wineye's own reader of Windows x64 kernel dumps (full, bitmap, kernel, kernel + user, complete, live kernel); `auto` (default) = `vmm.dll`, else native for a `.dmp` |
+| `--sympath <dir;dir>` | folders of private PDBs (repeatable; also `WINEYE_SYMPATH`) |
+| `--no-symbol-download` | stay offline (otherwise Microsoft PDBs, and module images missing from the dump, are downloaded into `~/.wineye/symbols`) |
 
 Instead of `--vmm`, a `config.json` next to `wineye.py` can point to MemProcFS (`"memprocfs_exe"` or `"leechcore_dll"`; `vmm.dll` is looked up in the same folder) — this is the file [HvKdFusion](https://github.com/EGKrb/HvKdFusion) writes with `hvkdfusion.py setup`.
 
@@ -62,7 +85,47 @@ Live VMs and `--from-vm` / `--vm` need administrator rights, Hyper-V and the com
 | `.ctl <N>`, `freeze`, `resume`/`g`, `r [reg...]` | control channel on a live VM |
 | `info`, `help`, `q` | summary, help, quit |
 
-Addresses accept `0x..`, decimal and `module!symbol`.
+Addresses are expressions, **hexadecimal by default** as in WinDbg (`fffff807` + backtick + `50001000`, `0x..` too; `0n` for decimal), with registers of the current context (`rsp`, `@rip`), `module!symbol`, `+` and `-`. Counts (`L<n>`) are decimal, or `0x..`.
+
+## Debugger
+
+On crash dumps, images and live VMs — with Microsoft's symbols (downloaded) or your private PDBs (`--sympath`):
+
+| Command | Effect |
+|---|---|
+| `!analyze [-v]` | bugcheck analysis: stop code, name and arguments, faulting context (trap frame / context record taken from the arguments), faulting instruction, **module / driver**, symbol, stack. On a dump that is not a crash: the current processor's context |
+| `k [n]` | call stack of the current context, **kernel then user mode across the system call** (and interrupts / machine frames); source lines with a private PDB |
+| `~`, `~<n>` | processors (current thread, process, rip); switch to processor *n* |
+| `!thread [ethread]` | thread details and stack (waiting threads are unwound from their switch frame) |
+| `.thread <ethread>` | switch the context to a thread |
+| `.cxr [addr]` | context from a `CONTEXT` record (no argument: back to the dump's context) |
+| `.trap <addr>` | context from a `KTRAP_FRAME` |
+| `r [reg...]` | registers of the current context / selected frame |
+| `u [addr] [L<n>]`, `uf <func>` | disassembly (WinDbg syntax, symbolized targets); `uf` follows the whole function, split chunks included |
+| `ln <addr>` | nearest symbol and source line |
+| `.frame [n]`, `dv` | select a frame; its **parameters and locals** with their values (private PDB) |
+| `!process <pid> 7` | a process with its threads and their stacks |
+| `.dump /u [pid] <file>` | write a **user-mode minidump** of a process (threads with their user-mode registers, modules, every resident page), readable by WinDbg / Visual Studio |
+| `.sympath [p;p]`, `.reload` | private PDB path; reload symbols |
+
+```
+wineye> !analyze -v
+SYSTEM_SERVICE_EXCEPTION (3b)
+Arg1: 00000000c0000005, code d'exception (violation d'accès)
+Arg3: fffff803f1e9a370, enregistrement de contexte (CONTEXT)
+...
+CONTEXTE : .cxr 0xfffff803f1e9a370
+FAULTING_IP : nt!DebugService2+0x6
+STACK_TEXT : ...
+MODULE_NAME : vmbus
+IMAGE_NAME : vmbus.sys
+SYMBOL_NAME : vmbus!XPartEnlightenedIsr
+FAILURE_BUCKET_ID : SYSTEM_SERVICE_EXCEPTION_vmbus!XPartEnlightenedIsr
+wineye> .dump /u 2848 C:\dumps\explorer.dmp
+[+] C:\dumps\explorer.dmp : 90 threads, 202 modules, 1679 plages, 24.5 Mo de mémoire
+```
+
+What it needs from the target: a *kernel* dump holds no user-mode pages (*kernel + user*, *complete* and full dumps do), so user-mode frames and `.dump /u` need one of those; `dv` needs a private PDB (Microsoft's public PDBs have no locals).
 
 **Scripting:** `-c "ps;lm"` runs commands (repeatable), `--batch` quits afterwards, `--json` prints structured output:
 
@@ -86,9 +149,9 @@ Instead of the REPL, wineye can serve the same target to other tools. All modes 
 
 | Mode | Command | Use |
 |---|---|---|
-| **MCP** | `wineye.py --dump d.raw --serve mcp` | MCP server (JSON-RPC 2.0 over stdio) for an AI/agent client. Tools: `list_processes`, `process_info`, `list_modules`, `list_handles`, `list_vads`, `read_memory`, `resolve_symbol`, `registers`. |
+| **MCP** | `wineye.py --dump d.raw --serve mcp` | MCP server (JSON-RPC 2.0 over stdio) for an AI/agent client. Tools: `list_processes`, `process_info`, `list_modules`, `list_handles`, `list_vads`, `read_memory`, `resolve_symbol`, `registers`, `stack`, `analyze`, `disassemble`. |
 | **gdbserver** | `wineye.py --dump d.raw --serve gdb [--listen 127.0.0.1:2159]` | GDB Remote Serial Protocol over TCP: `target remote 127.0.0.1:2159`, then `x/16xg <addr>` and, on a live VM, `info registers`. |
-| **DAP** | `wineye.py --dump d.raw --serve dap [--listen 127.0.0.1:4711]` | Debug Adapter Protocol (stdio, or TCP with `--listen`) for an IDE: `modules`, `readMemory`, `evaluate module!symbol`. |
+| **DAP** | `wineye.py --dump d.raw --serve dap [--listen 127.0.0.1:4711]` | Debug Adapter Protocol (stdio, or TCP with `--listen`) for an IDE: `modules`, `stackTrace` (real frames), `readMemory`, `evaluate module!symbol`. |
 
 Register wineye as an MCP server, for example in an MCP client configuration:
 
@@ -108,9 +171,13 @@ Passive memory gives **no run control**: no breakpoints, no single-stepping, no 
 
 ```powershell
 python tests\test_servers.py
+python tests\test_debugger.py
 ```
 
-Protocol-level tests of the MCP, DAP and gdbserver modes against a fake `Vmm`: no `vmm.dll` and no target needed, so they run anywhere (they run on every push in GitHub Actions).
+- `test_servers.py`: protocol-level tests of the MCP, DAP and gdbserver modes against a fake `Vmm`.
+- `test_debugger.py`: disassembler vectors, `CONTEXT` records, the PDB reader on a small private PDB (`tests/data/fixture.pdb`, built from `fixture.c`: lines, parameters, locals, types), x64 unwinding and `k` / `dv` / `.frame` / `u` / `uf` on a synthetic process, and the crash-dump reader on a synthetic `PAGEDU64` dump.
+
+No `vmm.dll` and no target needed, so they run anywhere (on every push in GitHub Actions, on Windows and Linux).
 
 ## Part of
 
@@ -118,4 +185,4 @@ wineye ships with [HvKdFusion](https://github.com/EGKrb/HvKdFusion) (Hyper-V ker
 
 ## License
 
-GPL-3.0-or-later — see [LICENSE](LICENSE). wineye loads MemProcFS / LeechCore (AGPL-3.0) at run time; they are not included.
+GPL-3.0-or-later — see [LICENSE](LICENSE). wineye loads MemProcFS / LeechCore (AGPL-3.0) at run time; they are not included. Symbols and module images come from Microsoft's public symbol server at run time and are not included either.
