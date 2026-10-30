@@ -50,7 +50,7 @@ python wineye.py --vmm C:\Tools\MemProcFS\vmm.dll --dump C:\dumps\MEMORY.DMP   #
 | Option | Effet |
 |---|---|
 | `--engine auto\|vmm\|native` | `vmm` = MemProcFS ; `native` = lecteur intégré des dumps noyau Windows x64 (complet, bitmap, noyau, noyau + user, mémoire complète, live) ; `auto` (défaut) = `vmm.dll`, sinon natif pour un `.dmp` |
-| `--sympath <dossier;dossier>` | dossiers de PDB privés (répétable ; aussi `WINEYE_SYMPATH`) |
+| `--sympath <dossier;dossier>` | dossiers de PDB privés et d'images de modules (répétable ; aussi `WINEYE_SYMPATH`) |
 | `--no-symbol-download` | hors ligne (sinon les PDB Microsoft, et les images de modules absentes du dump, sont téléchargés dans `~/.wineye/symbols`) |
 
 À la place de `--vmm`, un `config.json` à côté de `wineye.py` peut indiquer MemProcFS (`"memprocfs_exe"` ou `"leechcore_dll"` ; `vmm.dll` est cherché dans le même dossier) — c'est le fichier qu'écrit [HvKdFusion](https://github.com/EGKrb/HvKdFusion) avec `hvkdfusion.py setup`.
@@ -59,7 +59,7 @@ python wineye.py --vmm C:\Tools\MemProcFS\vmm.dll --dump C:\dumps\MEMORY.DMP   #
 
 | Option | Cible |
 |---|---|
-| `--dump <fichier>` | dump noyau (`.dmp`) ou image mémoire brute (`.raw`, `.mem`, `.vmem`) |
+| `--dump <fichier>` | dump noyau (`.dmp`), **minidump user-mode** (`.dmp`, `MDMP` : `.dump` de WinDbg, Gestionnaire des tâches, `MiniDumpWriteDump`, `.dump /u` de wineye) ou image mémoire brute (`.raw`, `.mem`, `.vmem`) |
 | `--device <dev>` | n'importe quel device LeechCore (`fpga`, `pmem`, `hvmm`...) |
 | `--live` | VM Hyper-V en direct (device LeechCore `hvmm`, issu de LiveCloudKd) |
 | `--from-vm <N>` | dump linéaire de la VM Hyper-V *N*, puis analyse (nécessite HvKdFusion) |
@@ -92,8 +92,8 @@ Sur les dumps, les images et les VM en direct — avec les symboles Microsoft (t
 | Commande | Effet |
 |---|---|
 | `!analyze [-v]` | analyse du bugcheck : code d'arrêt, nom et arguments, contexte fautif (trap frame / enregistrement de contexte tirés des arguments), instruction fautive, **module / driver**, symbole, pile. Sur un dump qui n'est pas un plantage : le contexte du processeur courant |
-| `k [n]` | pile d'appels du contexte courant, **noyau puis mode utilisateur à travers l'appel système** (et les interruptions / machine frames) ; lignes source avec un PDB privé |
-| `~`, `~<n>` | processeurs (thread courant, processus, rip) ; bascule sur le processeur *n* |
+| `k [n]`, `kb [n]` | pile d'appels du contexte courant, **noyau puis mode utilisateur à travers l'appel système** (et les interruptions / machine frames) ; lignes source avec un PDB privé ; `kb` ajoute les 4 slots de paramètres (« Args to Child ») |
+| `~`, `~<n>` | processeurs (thread courant, processus, rip) ; bascule sur le processeur *n*. Sur un minidump user-mode : ses threads |
 | `!thread [ethread]` | détails et pile d'un thread (les threads en attente sont déroulés depuis leur switch frame) |
 | `.thread <ethread>` | bascule le contexte sur un thread |
 | `.cxr [adr]` | contexte depuis un enregistrement `CONTEXT` (sans argument : retour au contexte du dump) |
@@ -101,9 +101,9 @@ Sur les dumps, les images et les VM en direct — avec les symboles Microsoft (t
 | `r [reg...]` | registres du contexte courant / de la frame sélectionnée |
 | `u [adr] [L<n>]`, `uf <fonction>` | désassemblage (syntaxe WinDbg, cibles symbolisées) ; `uf` suit toute la fonction, morceaux séparés compris |
 | `ln <adr>` | symbole et ligne source les plus proches |
-| `.frame [n]`, `dv` | sélectionne une frame ; ses **paramètres et variables locales** avec leurs valeurs (PDB privé) |
+| `.frame [n]`, `dv` | sélectionne une frame ; ses **paramètres et variables locales** avec leurs valeurs (PDB privé : structures champ par champ, chaînes derrière les `char *`). Sans PDB privé : les slots de paramètres, signalés comme non fiables |
 | `!process <pid> 7` | un processus avec ses threads et leurs piles |
-| `.dump /u [pid] <fichier>` | écrit un **minidump user-mode** d'un processus (threads avec leurs registres user-mode, modules, toutes les pages résidentes), lisible par WinDbg / Visual Studio |
+| `.dump /u [pid] <fichier>` | écrit un **minidump user-mode** d'un processus (threads avec leurs registres user-mode, modules, toutes les pages résidentes), lisible par WinDbg / Visual Studio — et par wineye |
 | `.sympath [p;p]`, `.reload` | chemin des PDB privés ; recharge les symboles |
 
 ```
@@ -123,7 +123,36 @@ wineye> .dump /u 2848 C:\dumps\explorer.dmp
 [+] C:\dumps\explorer.dmp : 90 threads, 202 modules, 1679 plages, 24.5 Mo de mémoire
 ```
 
-Ce qu'il faut dans la cible : un dump *noyau* ne contient aucune page user-mode (les dumps *noyau + user*, *mémoire complète* et complets en ont), donc les frames user-mode et `.dump /u` demandent l'un de ceux-là ; `dv` demande un PDB privé (les PDB publics de Microsoft n'ont pas de variables locales).
+### Dumps noyau sans mémoire user-mode
+
+Un dump *noyau* (et un dump noyau à chaud) ne contient aucune page user-mode. wineye récupère ce que le noyau sait encore :
+
+- les **modules** de chaque processus, reconstruits depuis ses VAD : nom de fichier, base, SizeOfImage, CheckSum, taille du fichier et — depuis Windows 10 2004 — le TimeDateStamp, de quoi télécharger l'image et son PDB depuis le serveur de symboles Microsoft (`lm` signale la reconstruction). Sur les builds plus anciens, l'image est reconnue en local par SizeOfImage + CheckSum + taille (dans `--sympath`, le cache de symboles, ou au même chemin sur la machine d'analyse) ;
+- pour chaque thread, la **frame user-mode où il est entré dans le noyau** (depuis sa trap frame), symbolisée : `win32u!ZwUserWaitMessage+0x14`, `ntdll!ZwWaitForWorkViaWorkerFactory+0x14`... La suite de la pile user-mode n'est pas dans le dump, et `k` le dit ;
+- `.dump /u` écrit un minidump **sans mémoire** : threads avec leurs registres user-mode, modules avec TimeDateStamp / SizeOfImage / CheckSum.
+
+Pour des piles user-mode complètes : un dump *noyau + user*, *mémoire complète* ou complet, une VM en direct, ou un minidump user-mode du processus.
+
+### Variables locales et PDB publics
+
+`dv` affiche les noms, types et valeurs des paramètres et variables locales depuis un PDB **privé** (vos propres builds : `/Zi`). Les PDB publics de Microsoft ne les contiennent pas — WinDbg ne peut pas les afficher non plus — donc `dv` montre alors les 4 slots de paramètres (home space), où le code compilé en `/Od` (et souvent le prologue du code optimisé) range RCX / RDX / R8 / R9.
+
+```
+wineye> dv                                  (minidump user-mode d'un plantage, PDB privé)
+inner  (frame 00)
+  param  int                    depth                = 0n7  (0x7)
+  param  _POINT3 *              pt                   = 0x000000eeb034f928
+  param  const char *           tag                  = 0x00007ff786da4000 'wineye'
+  local  char [32]              buffer               = 'wineye'
+  local  int                    local_counter        = 0n28  (0x1c)
+wineye> .frame 1
+wineye> dv
+outer  (frame 01)
+  param  int                    seed                 = 0n7  (0x7)
+  local  _POINT3                p                    = {x=7 y=8 z=0x1122334455667788}
+```
+
+Limite connue : le code 32 bits des processus WoW64 n'est pas déroulé (x64 uniquement).
 
 **Scripts :** `-c "ps;lm"` exécute des commandes (répétable), `--batch` quitte ensuite, `--json` produit une sortie structurée :
 
@@ -173,7 +202,7 @@ python tests\test_debugger.py
 ```
 
 - `test_servers.py` : tests au niveau protocole des modes MCP, DAP et gdbserver, avec un `Vmm` factice.
-- `test_debugger.py` : vecteurs du désassembleur, enregistrements `CONTEXT`, lecteur de PDB sur un petit PDB privé (`tests/data/fixture.pdb`, compilé depuis `fixture.c` : lignes, paramètres, variables locales, types), déroulage x64 et `k` / `dv` / `.frame` / `u` / `uf` sur un processus synthétique, et lecteur de dumps sur un dump `PAGEDU64` synthétique.
+- `test_debugger.py` : vecteurs du désassembleur, enregistrements `CONTEXT`, lecteur de PDB sur un petit PDB privé (`tests/data/fixture.pdb`, compilé depuis `fixture.c` : lignes, paramètres, variables locales, types), déroulage x64 et `k` / `dv` / `.frame` / `u` / `uf` sur un processus synthétique, lecteur de dumps sur un dump `PAGEDU64` synthétique, modules reconstruits depuis les VAD d'un dump noyau, identification locale d'une image, `kb` / `dv` sans PDB, et moteur de minidumps user-mode sur un `MDMP` synthétique (`~`, `!analyze -v`, `k`, `dv`).
 
 Ni `vmm.dll` ni cible nécessaires : ils tournent partout (à chaque push dans GitHub Actions, sous Windows et Linux).
 

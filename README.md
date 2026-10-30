@@ -52,7 +52,7 @@ python wineye.py --vmm C:\Tools\MemProcFS\vmm.dll --dump C:\dumps\MEMORY.DMP   #
 | Option | Effect |
 |---|---|
 | `--engine auto\|vmm\|native` | `vmm` = MemProcFS; `native` = wineye's own reader of Windows x64 kernel dumps (full, bitmap, kernel, kernel + user, complete, live kernel); `auto` (default) = `vmm.dll`, else native for a `.dmp` |
-| `--sympath <dir;dir>` | folders of private PDBs (repeatable; also `WINEYE_SYMPATH`) |
+| `--sympath <dir;dir>` | folders of private PDBs, and of module images (repeatable; also `WINEYE_SYMPATH`) |
 | `--no-symbol-download` | stay offline (otherwise Microsoft PDBs, and module images missing from the dump, are downloaded into `~/.wineye/symbols`) |
 
 Instead of `--vmm`, a `config.json` next to `wineye.py` can point to MemProcFS (`"memprocfs_exe"` or `"leechcore_dll"`; `vmm.dll` is looked up in the same folder) — this is the file [HvKdFusion](https://github.com/EGKrb/HvKdFusion) writes with `hvkdfusion.py setup`.
@@ -61,7 +61,7 @@ Instead of `--vmm`, a `config.json` next to `wineye.py` can point to MemProcFS (
 
 | Option | Target |
 |---|---|
-| `--dump <file>` | kernel crash dump (`.dmp`) or raw memory image (`.raw`, `.mem`, `.vmem`) |
+| `--dump <file>` | kernel crash dump (`.dmp`), **user-mode minidump** (`.dmp`, `MDMP`: WinDbg `.dump`, Task Manager, `MiniDumpWriteDump`, wineye's `.dump /u`), or raw memory image (`.raw`, `.mem`, `.vmem`) |
 | `--device <dev>` | any LeechCore device (`fpga`, `pmem`, `hvmm`, ...) |
 | `--live` | live Hyper-V VM (LeechCore `hvmm` device, from LiveCloudKd) |
 | `--from-vm <N>` | linear dump of Hyper-V VM *N*, then analysis (needs HvKdFusion) |
@@ -94,8 +94,8 @@ On crash dumps, images and live VMs — with Microsoft's symbols (downloaded) or
 | Command | Effect |
 |---|---|
 | `!analyze [-v]` | bugcheck analysis: stop code, name and arguments, faulting context (trap frame / context record taken from the arguments), faulting instruction, **module / driver**, symbol, stack. On a dump that is not a crash: the current processor's context |
-| `k [n]` | call stack of the current context, **kernel then user mode across the system call** (and interrupts / machine frames); source lines with a private PDB |
-| `~`, `~<n>` | processors (current thread, process, rip); switch to processor *n* |
+| `k [n]`, `kb [n]` | call stack of the current context, **kernel then user mode across the system call** (and interrupts / machine frames); source lines with a private PDB; `kb` adds the 4 parameter home slots ("Args to Child") |
+| `~`, `~<n>` | processors (current thread, process, rip); switch to processor *n*. On a user-mode minidump: its threads |
 | `!thread [ethread]` | thread details and stack (waiting threads are unwound from their switch frame) |
 | `.thread <ethread>` | switch the context to a thread |
 | `.cxr [addr]` | context from a `CONTEXT` record (no argument: back to the dump's context) |
@@ -103,9 +103,9 @@ On crash dumps, images and live VMs — with Microsoft's symbols (downloaded) or
 | `r [reg...]` | registers of the current context / selected frame |
 | `u [addr] [L<n>]`, `uf <func>` | disassembly (WinDbg syntax, symbolized targets); `uf` follows the whole function, split chunks included |
 | `ln <addr>` | nearest symbol and source line |
-| `.frame [n]`, `dv` | select a frame; its **parameters and locals** with their values (private PDB) |
+| `.frame [n]`, `dv` | select a frame; its **parameters and locals** with their values (private PDB: structures field by field, strings behind `char *`). Without a private PDB: the parameter home slots, marked as unreliable |
 | `!process <pid> 7` | a process with its threads and their stacks |
-| `.dump /u [pid] <file>` | write a **user-mode minidump** of a process (threads with their user-mode registers, modules, every resident page), readable by WinDbg / Visual Studio |
+| `.dump /u [pid] <file>` | write a **user-mode minidump** of a process (threads with their user-mode registers, modules, every resident page), readable by WinDbg / Visual Studio — and by wineye |
 | `.sympath [p;p]`, `.reload` | private PDB path; reload symbols |
 
 ```
@@ -125,7 +125,36 @@ wineye> .dump /u 2848 C:\dumps\explorer.dmp
 [+] C:\dumps\explorer.dmp : 90 threads, 202 modules, 1679 plages, 24.5 Mo de mémoire
 ```
 
-What it needs from the target: a *kernel* dump holds no user-mode pages (*kernel + user*, *complete* and full dumps do), so user-mode frames and `.dump /u` need one of those; `dv` needs a private PDB (Microsoft's public PDBs have no locals).
+### Kernel dumps without user-mode memory
+
+A *kernel* dump (and a live kernel dump) holds no user-mode page. wineye recovers what the kernel still knows:
+
+- **modules** of each process, rebuilt from its VADs: file name, base, SizeOfImage, CheckSum, file size and — from Windows 10 2004 — the TimeDateStamp, enough to fetch the image and its PDB from Microsoft's symbol server (`lm` says when the list was rebuilt). On older builds, the image is recognized locally by SizeOfImage + CheckSum + file size (in `--sympath`, the symbol cache, or at the same path on the analysis machine);
+- for each thread, the **user-mode frame where it entered the kernel** (from its trap frame), symbolized: `win32u!ZwUserWaitMessage+0x14`, `ntdll!ZwWaitForWorkViaWorkerFactory+0x14`... The rest of the user stack is not in the dump, and `k` says so;
+- `.dump /u` writes a minidump **without memory**: threads with their user-mode registers, modules with TimeDateStamp / SizeOfImage / CheckSum.
+
+For full user-mode stacks, use a *kernel + user*, *complete* or full dump, a live VM, or a user-mode minidump of the process.
+
+### Locals and public PDBs
+
+`dv` shows the names, types and values of parameters and locals from a **private** PDB (your own builds: `/Zi`). Microsoft's public PDBs do not contain them — WinDbg cannot show them either — so `dv` then shows the 4 parameter home slots, where code built with `/Od` (and often the prologue of optimized code) stores RCX / RDX / R8 / R9.
+
+```
+wineye> dv                                  (user-mode minidump of a crash, private PDB)
+inner  (frame 00)
+  param  int                    depth                = 0n7  (0x7)
+  param  _POINT3 *              pt                   = 0x000000eeb034f928
+  param  const char *           tag                  = 0x00007ff786da4000 'wineye'
+  local  char [32]              buffer               = 'wineye'
+  local  int                    local_counter        = 0n28  (0x1c)
+wineye> .frame 1
+wineye> dv
+outer  (frame 01)
+  param  int                    seed                 = 0n7  (0x7)
+  local  _POINT3                p                    = {x=7 y=8 z=0x1122334455667788}
+```
+
+Known limit: 32-bit code of WoW64 processes is not unwound (x64 only).
 
 **Scripting:** `-c "ps;lm"` runs commands (repeatable), `--batch` quits afterwards, `--json` prints structured output:
 
@@ -175,7 +204,7 @@ python tests\test_debugger.py
 ```
 
 - `test_servers.py`: protocol-level tests of the MCP, DAP and gdbserver modes against a fake `Vmm`.
-- `test_debugger.py`: disassembler vectors, `CONTEXT` records, the PDB reader on a small private PDB (`tests/data/fixture.pdb`, built from `fixture.c`: lines, parameters, locals, types), x64 unwinding and `k` / `dv` / `.frame` / `u` / `uf` on a synthetic process, and the crash-dump reader on a synthetic `PAGEDU64` dump.
+- `test_debugger.py`: disassembler vectors, `CONTEXT` records, the PDB reader on a small private PDB (`tests/data/fixture.pdb`, built from `fixture.c`: lines, parameters, locals, types), x64 unwinding and `k` / `dv` / `.frame` / `u` / `uf` on a synthetic process, the crash-dump reader on a synthetic `PAGEDU64` dump, modules rebuilt from the VADs of a kernel dump, local image identification, `kb` / `dv` without a PDB, and the user-mode minidump engine on a synthetic `MDMP` (`~`, `!analyze -v`, `k`, `dv`).
 
 No `vmm.dll` and no target needed, so they run anywhere (on every push in GitHub Actions, on Windows and Linux).
 

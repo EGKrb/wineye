@@ -168,7 +168,7 @@ python wineye.py --vmm C:\Tools\MemProcFS\vmm.dll --dump vm0.raw -c "ps;lm 4" --
   <section id="debugger">
     <div class="wrap">
       <h2>Debugger</h2>
-      <p class="sub">On crash dumps, images and live VMs, with Microsoft's symbols (downloaded) or your private PDBs (<code>--sympath</code>).</p>
+      <p class="sub">On crash dumps, user-mode minidumps, images and live VMs, with Microsoft's symbols (downloaded) or your private PDBs (<code>--sympath</code>). On a kernel dump without user pages, modules are rebuilt from the VADs and each thread's user-mode entry frame is still symbolized.</p>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Command</th><th>Effect</th></tr></thead>
@@ -179,9 +179,10 @@ python wineye.py --vmm C:\Tools\MemProcFS\vmm.dll --dump vm0.raw -c "ps;lm 4" --
             <tr><td><code>!thread</code>, <code>.thread &lt;ethread&gt;</code></td><td>thread details and stack; switch to a thread</td></tr>
             <tr><td><code>.cxr [addr]</code>, <code>.trap &lt;addr&gt;</code>, <code>r</code></td><td>context from a CONTEXT record / KTRAP_FRAME; registers</td></tr>
             <tr><td><code>u [addr] [L&lt;n&gt;]</code>, <code>uf &lt;func&gt;</code>, <code>ln</code></td><td>disassembly (WinDbg syntax), whole function, nearest symbol</td></tr>
-            <tr><td><code>.frame [n]</code>, <code>dv</code></td><td>select a frame; its parameters and locals (private PDB)</td></tr>
+            <tr><td><code>.frame [n]</code>, <code>dv</code>, <code>kb</code></td><td>select a frame; its parameters and locals (private PDB: struct fields, strings); without one, the parameter home slots</td></tr>
             <tr><td><code>!process &lt;pid&gt; 7</code></td><td>threads of a process with their stacks</td></tr>
-            <tr><td><code>.dump /u [pid] &lt;file&gt;</code></td><td>user-mode minidump of a process, for WinDbg / Visual Studio</td></tr>
+            <tr><td><code>.dump /u [pid] &lt;file&gt;</code></td><td>user-mode minidump of a process, for WinDbg / Visual Studio (and wineye)</td></tr>
+            <tr><td><code>--dump app.dmp</code></td><td>user-mode minidumps too: <code>~</code> lists the threads, <code>!analyze</code> reads the exception</td></tr>
           </tbody>
         </table>
       </div>

@@ -24,8 +24,19 @@ by itself (still one Python file, standard library only).
 - MCP tools `stack`, `analyze`, `disassemble`; DAP `stackTrace` returns real frames.
 - Fixed: `vmm.dll` never initialized (its argument parsing starts at index 0);
   kernel reads in a KVA-shadowed process context now fall back to System.
+- User-mode minidumps (`MDMP`: WinDbg `.dump`, Task Manager, `MiniDumpWriteDump`,
+  `.dump /u`) open with their own engine: `~` lists the threads, `!analyze -v` reads
+  the exception record, `k`, `dv`, `u`, `db`... in user mode.
+- Kernel dumps without user pages: modules rebuilt from the VADs (image section:
+  name, SizeOfImage, CheckSum, file size, TimeDateStamp from Windows 10 2004), so the
+  user-mode frame where each thread entered the kernel is symbolized; on older builds
+  the image is recognized locally by SizeOfImage + CheckSum + file size. `k` says
+  where the user stack stops; `.dump /u` writes threads + modules without memory.
+- `kb` (parameter home slots, "Args to Child"); `dv` without a private PDB shows them,
+  marked as unreliable; with one, structures field by field and `char *` strings.
 - Tests: `tests/test_debugger.py` (disassembler, PDB fixture, unwinder, synthetic
-  crash dump), run on Windows and Linux.
+  crash dump, VAD modules, local images, synthetic user minidump), run on Windows
+  and Linux. `dv` was also checked on a real crash minidump of a `/Zi /Od` program.
 
 ## [1.0.0] - 2026-10-29
 
