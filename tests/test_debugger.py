@@ -82,6 +82,36 @@ i = dis.decode(bytes.fromhex("7f21"), 0xFFFFF3EB705AD360)
 check("jg rel8 -> target", i.text == "jg      fffff3eb705ad383")
 check("decode_all stops at count", len(dis.decode_all(bytes.fromhex("9090909090"), 0, 3)) == 3)
 
+print("== disassembler (32-bit mode) ==")
+VECTORS32 = [
+    ("55", "push    ebp"),
+    ("8bec", "mov     ebp,esp"),
+    ("83ec10", "sub     esp,10h"),
+    ("40", "inc     eax"),
+    ("4f", "dec     edi"),
+    ("60", "pushad"),
+    ("61", "popad"),
+    ("9c", "pushfd"),
+    ("06", "push    es"),
+    ("27", "daa"),
+    ("a1d0204000", "mov     eax,dword ptr [4020D0h]"),
+    ("8b0d00304000", "mov     ecx,dword ptr [403000h]"),
+    ("ff15e8204000", "call    dword ptr [4020E8h]"),
+    ("8b4508", "mov     eax,dword ptr [ebp+8]"),
+    ("64a118000000", "mov     eax,dword ptr fs:[18h]"),
+    ("c20800", "ret     8"),
+    ("6633c0", "xor     ax,ax"),
+    ("9bdfe0", "fstsw   ax"),
+    ("d9eb", "fldpi"),
+]
+for hexb, text in VECTORS32:
+    i = dis.decode(bytes.fromhex(hexb), 0x401000, mode32=True)
+    check(f"{hexb:<20} -> {text}", i.text == text and i.length == len(hexb) // 2)
+i = dis.decode(bytes.fromhex("e8fb0f0000"), 0x401000, mode32=True)
+check("call rel32 -> 32-bit target", i.text == "call    00402000" and i.target == 0x402000)
+check("same bytes in long mode: REX, not inc", dis.decode(bytes.fromhex("4889e5"), 0).text == "mov     rbp,rsp")
+check("SSE cmpsd: no rep prefix", dis.decode(bytes.fromhex("f20fc2c800"), 0).text == "cmpsd   xmm1,xmm0,0")
+
 # ----------------------------- helpers -----------------------------
 print("== CONTEXT / names ==")
 regs = {r: 0x1111111111111111 * (n + 1) & 0xFFFFFFFFFFFFFFFF for n, r in enumerate(

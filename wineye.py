@@ -547,7 +547,7 @@ _INVALID64 = {0x06, 0x07, 0x0E, 0x16, 0x17, 0x1E, 0x1F, 0x27, 0x2F, 0x37, 0x3F,
 # Two-byte map 0F xx (no mandatory prefix unless listed in _OP2P)
 _OP2 = {
     0x05: ("syscall", ""), 0x06: ("clts", ""), 0x07: ("sysret", ""), 0x08: ("invd", ""),
-    0x09: ("wbinvd", ""), 0x0B: ("ud2", ""), 0x0D: ("prefetchw", "M"),
+    0x09: ("wbinvd", ""), 0x0B: ("ud2", ""), 0x0D: ("prefetchw", "M"), 0x0E: ("femms", ""),
     0x18: ("prefetch", "M"), 0x19: ("nop", "Ev"), 0x1A: ("nop", "Ev"), 0x1B: ("nop", "Ev"),
     0x1C: ("nop", "Ev"), 0x1D: ("nop", "Ev"), 0x1E: ("nop", "Ev"), 0x1F: ("nop", "Ev"),
     0x20: ("mov", "Rq,Cq"), 0x21: ("mov", "Rq,Dq"), 0x22: ("mov", "Cq,Rq"), 0x23: ("mov", "Dq,Rq"),
@@ -728,8 +728,12 @@ _X87_MEM = {
 }
 _X87_MEMSIZE = {0xD8: 4, 0xD9: 4, 0xDA: 4, 0xDB: 4, 0xDC: 8, 0xDD: 8, 0xDE: 2, 0xDF: 2}
 _X87_REG = {0xD9E0: "fchs", 0xD9E1: "fabs", 0xD9E4: "ftst", 0xD9E5: "fxam", 0xD9E8: "fld1",
-            0xD9EE: "fldz", 0xD9F0: "f2xm1", 0xD9FA: "fsqrt", 0xD9FC: "frndint", 0xD9FE: "fsin",
-            0xD9FF: "fcos", 0xDBE2: "fnclex", 0xDBE3: "fninit", 0xDFE0: "fnstsw ax", 0xD9D0: "fnop"}
+            0xD9E9: "fldl2t", 0xD9EA: "fldl2e", 0xD9EB: "fldpi", 0xD9EC: "fldlg2", 0xD9ED: "fldln2",
+            0xD9EE: "fldz", 0xD9F0: "f2xm1", 0xD9F1: "fyl2x", 0xD9F2: "fptan", 0xD9F3: "fpatan",
+            0xD9F4: "fxtract", 0xD9F5: "fprem1", 0xD9F6: "fdecstp", 0xD9F7: "fincstp", 0xD9F8: "fprem",
+            0xD9F9: "fyl2xp1", 0xD9FA: "fsqrt", 0xD9FB: "fsincos", 0xD9FC: "frndint", 0xD9FD: "fscale",
+            0xD9FE: "fsin", 0xD9FF: "fcos", 0xDBE2: "fnclex", 0xDBE3: "fninit", 0xDFE0: "fnstsw ax",
+            0xD9D0: "fnop", 0xDED9: "fcompp"}
 
 
 class Insn:
@@ -758,21 +762,22 @@ def _imm_text(v: int) -> str:
 
 
 class X64Disassembler:
-    """Decodes x86-64 (long mode) instructions. Covers the general purpose, system,
+    """Decodes x86-64 (long mode) instructions - and, with mode32, 32-bit protected
+    mode code (WoW64 processes, x86 images). Covers the general purpose, system,
     x87, MMX/SSE1-4.2, AES/SHA, AVX/AVX2/FMA/BMI (VEX) instruction sets; EVEX
     (AVX-512) is decoded for length with a generic mnemonic."""
 
-    def decode(self, code: bytes, address: int) -> Insn:
+    def decode(self, code: bytes, address: int, mode32: bool = False) -> Insn:
         try:
-            return _Decoder(code, address).run()
+            return _Decoder(code, address, mode32).run()
         except (IndexError, _Invalid):
             return Insn(address, 1, "???", "", code[:1])
 
-    def decode_all(self, code: bytes, address: int, count: int | None = None):
+    def decode_all(self, code: bytes, address: int, count: int | None = None, mode32: bool = False):
         off = 0
         out = []
         while off < len(code) and (count is None or len(out) < count):
-            ins = self.decode(code[off:off + 15], address + off)
+            ins = self.decode(code[off:off + 15], address + off, mode32)
             out.append(ins)
             off += ins.length
         return out
@@ -782,9 +787,16 @@ class _Invalid(Exception):
     pass
 
 
+# one-byte opcodes of 32-bit mode that long mode dropped
+_OP1_32 = {0x06: ("push", "es"), 0x07: ("pop", "es"), 0x0E: ("push", "cs"), 0x16: ("push", "ss"),
+           0x17: ("pop", "ss"), 0x1E: ("push", "ds"), 0x1F: ("pop", "ds"), 0x27: ("daa", ""),
+           0x2F: ("das", ""), 0x37: ("aaa", ""), 0x3F: ("aas", ""), 0xCE: ("into", ""), 0xD6: ("salc", "")}
+
+
 class _Decoder:
-    def __init__(self, code, address):
+    def __init__(self, code, address, mode32=False):
         self.c = code
+        self.mode32 = mode32
         self.addr = address
         self.p = 0
         self.rex = 0
@@ -850,13 +862,15 @@ class _Decoder:
                 self.mandatory = b
                 break
         b = self.c[self.p]
-        if 0x40 <= b <= 0x4F:
+        if 0x40 <= b <= 0x4F and not self.mode32:
             self.rex = b
             self.p += 1
             b = self.c[self.p]
         self.p += 1
         if b in (0xC4, 0xC5, 0x62) and not self.rex:
-            return self._vex(b)
+            # 32-bit mode: VEX / EVEX only when the next byte has mod == 3 (else LES / LDS / BOUND)
+            if not self.mode32 or (self.p < len(self.c) and self.c[self.p] >> 6 == 3):
+                return self._vex(b)
         if b == 0x0F:
             return self._two_byte()
         return self._one_byte(b)
@@ -864,16 +878,22 @@ class _Decoder:
     # -- helpers -- #
     @property
     def rex_w(self):
-        return bool(self.rex & 8)
+        return bool(self.rex & 8) and not self.mode32
 
     def opsize(self, d64=False):
         if self.rex_w:
             return 8
         if self.opsize16:
             return 2
-        return 8 if d64 else 4
+        return 8 if d64 and not self.mode32 else 4
 
     def reg_name(self, n, size):
+        if self.mode32:
+            n &= 7
+            if size == 8:
+                size = 4
+            if size == 1:
+                return _GPR8_LEGACY[n]
         if size == 8:
             return _GPR64[n]
         if size == 4:
@@ -900,7 +920,19 @@ class _Decoder:
         return self.modrm[2] | (8 if self.rex & 1 else 0)
 
     def _mem_operand(self, mod, rm):
-        areg = _GPR32 if self.addr32 else _GPR64
+        if self.mode32 and self.addr32:          # 0x67 in 32-bit mode: 16-bit addressing
+            base, index = (("bx", "si"), ("bx", "di"), ("bp", "si"), ("bp", "di"),
+                           ("si", None), ("di", None), ("bp", None), ("bx", None))[rm]
+            disp = 0
+            if mod == 0 and rm == 6:
+                base, disp = None, self.ux(2)
+            elif mod == 1:
+                disp = self.sx(1)
+            elif mod == 2:
+                disp = self.sx(2)
+            self.mem = (base, index, 1, disp, False)
+            return
+        areg = _GPR32 if (self.addr32 or self.mode32) else _GPR64
         base = index = None
         scale = 1
         disp = 0
@@ -916,6 +948,8 @@ class _Decoder:
                 disp = self.sx(4)
             else:
                 base = areg[b]
+        elif rm == 5 and mod == 0 and self.mode32:
+            disp = self.ux(4)             # absolute address
         elif rm == 5 and mod == 0:
             rip = True
             self.rip_disp_at = self.p
@@ -943,7 +977,7 @@ class _Decoder:
                 if s:
                     s += ("-" if disp < 0 else "+") + _imm_text(abs(disp))
                 else:
-                    s = _imm_text(disp & 0xFFFFFFFFFFFFFFFF)
+                    s = _imm_text(disp & (0xFFFFFFFF if self.mode32 else 0xFFFFFFFFFFFFFFFF))
             inner = s
         seg = f"{self.seg}:" if self.seg else ""
         prefix = f"{_MEMSIZE[size]} ptr " if size in _MEMSIZE else ""
@@ -997,7 +1031,7 @@ class _Decoder:
         if kind == "G":
             return self.reg_name(self.reg_field(), self.size_of(sz))
         if kind == "R":
-            return _GPR64[self.rm_field()]
+            return (_GPR32 if self.mode32 else _GPR64)[self.rm_field() & (7 if self.mode32 else 15)]
         if kind == "C":
             return f"cr{self.reg_field()}"
         if kind == "D":
@@ -1015,7 +1049,7 @@ class _Decoder:
             if sz == "b":
                 v = self.ux(1)
             elif sz == "b64":       # push imm8: sign-extended to the stack width
-                v = self.sx(1) & 0xFFFFFFFFFFFFFFFF
+                v = self.sx(1) & (0xFFFFFFFF if self.mode32 else 0xFFFFFFFFFFFFFFFF)
             elif sz == "bs":        # imm8 sign-extended to the operand size (83 /x, 6B)
                 v = self.sx(1) & ((1 << (self.opsize() * 8)) - 1)
             elif sz == "w":
@@ -1037,7 +1071,7 @@ class _Decoder:
             self.target = ("rel", rel)
             return None   # resolved later
         if kind == "O":
-            moff = self.ux(4 if self.addr32 else 8)
+            moff = self.ux((2 if self.addr32 else 4) if self.mode32 else (4 if self.addr32 else 8))
             size = 1 if sz == "b" else self.opsize()
             seg = f"{self.seg}:" if self.seg else ""
             return f"{_MEMSIZE[size]} ptr {seg}[{_imm_text(moff)}]"
@@ -1085,9 +1119,13 @@ class _Decoder:
         for o in ops:
             if o is None:     # relative branch target
                 rel = self.target[1]
-                dest = (end + rel) & 0xFFFFFFFFFFFFFFFF
+                if self.mode32:
+                    dest = (end + rel) & 0xFFFFFFFF
+                    text_ops.append(f"{dest:08x}")
+                else:
+                    dest = (end + rel) & 0xFFFFFFFFFFFFFFFF
+                    text_ops.append(f"{dest:016x}")
                 self.target = dest
-                text_ops.append(f"{dest:016x}")
             elif isinstance(o, tuple) and o[0] == "MEM":
                 prefix, seg, inner = o[1]
                 if inner is None:
@@ -1104,11 +1142,11 @@ class _Decoder:
         pre = ""
         if self.lock:
             pre = "lock "
-        if self.rep and mnemonic in ("movs", "stos", "lods", "ins", "outs", "movsb", "movsw", "movsd",
+        if self.rep and not ops and mnemonic in ("movs", "stos", "lods", "ins", "outs", "movsb", "movsw", "movsd",
                                      "movsq", "stosb", "stosw", "stosd", "stosq", "lodsb", "lodsw",
                                      "lodsd", "lodsq", "insb", "outsb"):
             pre += "rep "
-        elif self.rep and mnemonic in ("cmps", "scas", "cmpsb", "cmpsw", "cmpsd", "cmpsq", "scasb",
+        elif self.rep and not ops and mnemonic in ("cmps", "scas", "cmpsb", "cmpsw", "cmpsd", "cmpsq", "scasb",
                                        "scasw", "scasd", "scasq"):
             pre += "repe " if self.rep == 0xF3 else "repne "
         return Insn(self.addr, length, pre + mnemonic, ",".join(text_ops), bytes(self.c[:length]),
@@ -1117,7 +1155,11 @@ class _Decoder:
     # -- one-byte map -- #
     def _one_byte(self, op):
         self.op = op
-        if op in _INVALID64:
+        if self.mode32:
+            r = self._one_byte32(op)
+            if r is not None:
+                return r
+        elif op in _INVALID64:
             raise _Invalid
         if op in _GRP:
             names, spec = _GRP[op]
@@ -1136,7 +1178,7 @@ class _Decoder:
                 r = self.modrm[1]
                 if r in (2, 4):
                     kind = "call" if r == 2 else "jmp"
-                    return self.finish(name, [self.rm_operand(8)], kind)
+                    return self.finish(name, [self.rm_operand(4 if self.mode32 else 8)], kind)
                 if r in (3, 5):
                     if self.modrm[0] == 3:
                         raise _Invalid
@@ -1151,6 +1193,15 @@ class _Decoder:
             raise _Invalid
         name, spec = _OP1[op]
         kind = None
+        if op == 0x9B and self.p < len(self.c) and self.c[self.p] in (0xD9, 0xDB, 0xDD, 0xDF):
+            nxt = _Decoder(self.c[self.p:], self.addr + self.p, self.mode32)
+            try:
+                ins = nxt.run()
+            except (IndexError, _Invalid):
+                ins = None
+            if ins is not None and ins.mnemonic in ("fnstsw", "fnstcw", "fnstenv", "fnsave", "fnclex", "fninit"):
+                self.p += ins.length
+                return self.finish("f" + ins.mnemonic[2:], [ins.operands] if ins.operands else [])
         if op == 0x90:
             if self.rex & 1:
                 return self.finish("xchg", ["r8", "rax"] if self.rex_w else ["r8d", "eax"])
@@ -1164,7 +1215,7 @@ class _Decoder:
             name = {2: "cwd", 4: "cdq", 8: "cqo"}[self.opsize()]
             spec = ""
         elif spec == "f64":
-            name = name + ("" if self.opsize16 else "q")
+            name = name + ("" if self.opsize16 else ("d" if self.mode32 else "q"))
             spec = ""
         elif spec == "iret":
             name = {2: "iret", 4: "iretd", 8: "iretq"}[self.opsize()]
@@ -1178,6 +1229,8 @@ class _Decoder:
             spec = ""
         if op == 0x63 and not self.rex_w:
             spec = "Gv,Ed"
+        if op == 0xE3 and self.mode32:
+            name = "jcxz" if self.addr32 else "jecxz"
         if name in ("call",):
             kind = "call"
         elif name == "jmp":
@@ -1192,6 +1245,37 @@ class _Decoder:
             spec = "Zv64"
         ops = self.operands(spec.replace("Iz64", "Iz64").replace("Ib64", "Ib64"))
         return self.finish(name, ops, kind)
+
+    def _one_byte32(self, op):
+        """Opcodes whose meaning differs in 32-bit mode; None: same as long mode."""
+        if 0x40 <= op <= 0x4F:
+            return self.finish("inc" if op < 0x48 else "dec", [self.reg_name(op & 7, 2 if self.opsize16 else 4)])
+        if op in _OP1_32:
+            name, reg = _OP1_32[op]
+            return self.finish(name, [reg] if reg else [])
+        if op in (0x60, 0x61):
+            return self.finish(("pusha" if op == 0x60 else "popa") + ("" if self.opsize16 else "d"), [])
+        if op == 0x82:
+            self.read_modrm()
+            return self.finish(["add", "or", "adc", "sbb", "and", "sub", "xor", "cmp"][self.modrm[1]],
+                               self.operands("Eb,Ib"))
+        if op in (0x62, 0xC4, 0xC5):            # BOUND / LES / LDS (mod != 3, checked in run)
+            self.read_modrm()
+            name = {0x62: "bound", 0xC4: "les", 0xC5: "lds"}[op]
+            return self.finish(name, [self.reg_name(self.modrm[1], self.opsize()),
+                                      self.rm_operand(8 if op == 0x62 else 6)])
+        if op == 0x63:
+            return self.finish("arpl", self.operands("Ew,Gw"))
+        if op in (0x9A, 0xEA):
+            off = self.ux(2 if self.opsize16 else 4)
+            sel = self.ux(2)
+            return self.finish("call" if op == 0x9A else "jmp", [f"{sel:04x}:{off:08x}"],
+                               "call" if op == 0x9A else "jmp")
+        if op in (0xD4, 0xD5):
+            imm = self.ux(1)
+            name = "aam" if op == 0xD4 else "aad"
+            return self.finish(name, [] if imm == 10 else [_imm_text(imm)])
+        return None
 
     def _x87(self, op):
         mod, reg, rm = self.read_modrm()
@@ -1226,7 +1310,7 @@ class _Decoder:
             0xDD: ["ffree", None, "fst", "fstp", "fucom", "fucomp", None, None],
             0xDA: ["fcmovb", "fcmove", "fcmovbe", "fcmovu", None, "fucompp", None, None],
             0xDB: ["fcmovnb", "fcmovne", "fcmovnbe", "fcmovnu", None, "fucomi", "fcomi", None],
-            0xDF: [None, None, None, None, None, "fucomip", "fcomip", None],
+            0xDF: ["ffreep", None, None, None, None, "fucomip", "fcomip", None],
         }
         name = tables.get(op, [None] * 8)[reg]
         if name is None:
@@ -1456,6 +1540,9 @@ class _Decoder:
             vvvv = (~p1 >> 3) & 0xF
             pp = p1 & 3
             L = (p2 >> 5) & 3          # 0 xmm, 1 ymm, 2 zmm
+        if self.mode32:                 # no R/X/B extension, vvvv bit 3 ignored
+            self.rex = 0x40
+            vvvv &= 7
         self.vex = {"vvvv": vvvv, "L": L, "pp": pp, "map": mmmmm, "W": W, "evex": b == 0x62}
         self.mandatory = {0: None, 1: 0x66, 2: 0xF3, 3: 0xF2}[pp]
         self.rep = None
