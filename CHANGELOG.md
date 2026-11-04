@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.1] - 2026-11-04
+
+- A processor without saved context (raw memory image, live target: no dump header,
+  empty `KPRCB.ProcessorState`) no longer shows `0x0`: its running thread gets its
+  user-mode registers from the trap frame at the top of its kernel stack (built on
+  every entry from user mode), else from `KTHREAD.TrapFrame`, only if it holds a
+  user-mode context; otherwise `~` / `k` say the context is not in the source.
+  Used by `~`, `~<n>`, `.thread`, `!thread`, `!process <pid> 7`, `!analyze`, MCP / DAP.
+- Fixed: rbx / rdi / rsi of a trap frame were taken as known after an interrupt or
+  an exception; the kernel saves them only on a system call (`ExceptionActive` 2).
+- Checked on the Windows 10 kernel + user dump turned into a raw image for MemProcFS:
+  the running thread of the 32-bit program gets the same stack as from the dump header.
+
 ## [1.2.0] - 2026-10-30
 
 32-bit code of WoW64 processes is unwound (it was x64 only), with or without PDBs.

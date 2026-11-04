@@ -93,7 +93,7 @@ Sur les dumps, les images et les VM en direct — avec les symboles Microsoft (t
 |---|---|
 | `!analyze [-v]` | analyse du bugcheck : code d'arrêt, nom et arguments, contexte fautif (trap frame / enregistrement de contexte tirés des arguments), instruction fautive, **module / driver**, symbole, pile. Sur un dump qui n'est pas un plantage : le contexte du processeur courant |
 | `k [n]`, `kb [n]` | pile d'appels du contexte courant, **noyau puis mode utilisateur à travers l'appel système** (et les interruptions / machine frames), **code 32 bits des processus WoW64 compris, avec ou sans PDB** ; lignes source avec un PDB privé ; `kb` ajoute les 4 slots de paramètres (« Args to Child » ; x86 : les 3 premiers paramètres sur la pile) |
-| `~`, `~<n>` | processeurs (thread courant, processus, rip) ; bascule sur le processeur *n*. Sur un minidump user-mode : ses threads |
+| `~`, `~<n>` | processeurs (thread courant, processus, rip) ; bascule sur le processeur *n*. Un processeur dont la source n'a pas sauvegardé le contexte (image brute, cible en direct) reçoit les registres user de son thread depuis la trap frame en haut de sa pile noyau. Sur un minidump user-mode : ses threads |
 | `!thread [ethread]` | détails et pile d'un thread (les threads en attente sont déroulés depuis leur switch frame) |
 | `.thread <ethread>` | bascule le contexte sur un thread |
 | `.cxr [adr]` | contexte depuis un enregistrement `CONTEXT` (sans argument : retour au contexte du dump) |

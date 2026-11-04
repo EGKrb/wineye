@@ -95,7 +95,7 @@ On crash dumps, images and live VMs — with Microsoft's symbols (downloaded) or
 |---|---|
 | `!analyze [-v]` | bugcheck analysis: stop code, name and arguments, faulting context (trap frame / context record taken from the arguments), faulting instruction, **module / driver**, symbol, stack. On a dump that is not a crash: the current processor's context |
 | `k [n]`, `kb [n]` | call stack of the current context, **kernel then user mode across the system call** (and interrupts / machine frames), **32-bit code of WoW64 processes included, with or without PDBs**; source lines with a private PDB; `kb` adds the 4 parameter home slots ("Args to Child"; x86: the first 3 stack parameters) |
-| `~`, `~<n>` | processors (current thread, process, rip); switch to processor *n*. On a user-mode minidump: its threads |
+| `~`, `~<n>` | processors (current thread, process, rip); switch to processor *n*. A processor whose context the source did not save (raw image, live target) gets its running thread's user registers from the trap frame at the top of its kernel stack. On a user-mode minidump: its threads |
 | `!thread [ethread]` | thread details and stack (waiting threads are unwound from their switch frame) |
 | `.thread <ethread>` | switch the context to a thread |
 | `.cxr [addr]` | context from a `CONTEXT` record (no argument: back to the dump's context) |
